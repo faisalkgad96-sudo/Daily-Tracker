@@ -228,24 +228,25 @@ if not matrix_today.empty:
                 return 'color: green; font-weight: bold'
         return ''
     
-    try:
-        hour_cols = [col for col in final_view.columns if col != 'Total']
-        
-        # Include Total row in the gradient formatting
-        format_rows = list(matrix_today.index) + ['Total']
-        
-        styled = final_view.style.applymap(
+    # Apply styling
+    hour_cols = [col for col in final_view.columns if col != 'Total']
+    
+    # Get all rows that should have blue gradient (areas + Total)
+    gradient_rows = list(matrix_today.index) + ['Total']
+    
+    styled = final_view.style\
+        .background_gradient(
+            cmap="Blues",
+            subset=pd.IndexSlice[gradient_rows, hour_cols],
+            axis=1
+        )\
+        .applymap(
             highlight_negatives,
             subset=pd.IndexSlice[['vs Day Before', 'vs Last Week'], hour_cols]
-        ).background_gradient(
-            cmap="Blues",
-            subset=pd.IndexSlice[format_rows, hour_cols],
-            axis=1
-        ).format("{:.0f}")
-        
-        st.dataframe(styled, use_container_width=True, height=400)
-    except:
-        st.dataframe(final_view, use_container_width=True, height=400)
+        )\
+        .format("{:.0f}")
+    
+    st.dataframe(styled, use_container_width=True, height=400)
     
     # Download button
     col1, col2, col3 = st.columns([1, 1, 3])
