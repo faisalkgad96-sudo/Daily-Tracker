@@ -112,9 +112,19 @@ st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d,
 col1, col2 = st.columns([4, 1])
 with col2:
     if st.button("↻ Refresh", use_container_width=True):
+        # Clear both Streamlit cache and session state
         st.cache_data.clear()
+        if 'cached_data' in st.session_state:
+            del st.session_state.cached_data
+        if 'cached_date' in st.session_state:
+            del st.session_state.cached_date
         st.rerun()
-    st.caption(f"📅 Last updated: {datetime.now().strftime('%H:%M:%S')}")
+    
+    # Show persistent last refresh time
+    if 'last_refresh_time' in st.session_state and st.session_state.last_refresh_time:
+        st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')}")
+    else:
+        st.caption(f"📅 Last updated: {datetime.now().strftime('%H:%M:%S')}")
 
 st.divider()
 
@@ -123,10 +133,41 @@ today = pd.to_datetime(target_date_input)
 yesterday = today - timedelta(days=1)
 last_week = today - timedelta(days=7)
 
-with st.spinner('🔄 Loading data...'):
-    df_today = fetch_day_data(today, AUTH_TOKEN)
-    df_yesterday = fetch_day_data(yesterday, AUTH_TOKEN)
-    df_last_week = fetch_day_data(last_week, AUTH_TOKEN)
+# Initialize session state for data persistence
+if 'last_refresh_time' not in st.session_state:
+    st.session_state.last_refresh_time = None
+if 'cached_data' not in st.session_state:
+    st.session_state.cached_data = {}
+if 'cached_date' not in st.session_state:
+    st.session_state.cached_date = None
+
+# Check if we need to fetch data (date changed or no cached data)
+date_str = today.strftime('%Y-%m-%d')
+need_refresh = (
+    st.session_state.cached_date != date_str or 
+    'df_today' not in st.session_state.cached_data
+)
+
+# Only fetch if needed
+if need_refresh:
+    with st.spinner('🔄 Loading data...'):
+        df_today = fetch_day_data(today, AUTH_TOKEN)
+        df_yesterday = fetch_day_data(yesterday, AUTH_TOKEN)
+        df_last_week = fetch_day_data(last_week, AUTH_TOKEN)
+        
+        # Cache the data in session state
+        st.session_state.cached_data = {
+            'df_today': df_today,
+            'df_yesterday': df_yesterday,
+            'df_last_week': df_last_week
+        }
+        st.session_state.cached_date = date_str
+        st.session_state.last_refresh_time = datetime.now()
+else:
+    # Use cached data (no API calls)
+    df_today = st.session_state.cached_data['df_today']
+    df_yesterday = st.session_state.cached_data['df_yesterday']
+    df_last_week = st.session_state.cached_data['df_last_week']
 
 # --- Data Processing ---
 def create_matrix(df):
@@ -234,19 +275,36 @@ if not matrix_today.empty:
     # Get all rows that should have blue gradient (areas + Total)
     gradient_rows = list(matrix_today.index) + ['Total']
     
-    styled = final_view.style\
-        .background_gradient(
-            cmap="Blues",
-            subset=pd.IndexSlice[gradient_rows, hour_cols],
-            axis=1
-        )\
-        .applymap(
-            highlight_negatives,
-            subset=pd.IndexSlice[['vs Day Before', 'vs Last Week'], hour_cols]
-        )\
-        .format("{:.0f}")
-    
-    st.dataframe(styled, use_container_width=True, height=400)
+    try:
+        # Try to apply full styling with gradient
+        styled = final_view.style\
+            .background_gradient(
+                cmap="Blues",
+                subset=pd.IndexSlice[gradient_rows, hour_cols],
+                axis=1
+            )\
+            .applymap(
+                highlight_negatives,
+                subset=pd.IndexSlice[['vs Day Before', 'vs Last Week'], hour_cols]
+            )\
+            .format("{:.0f}")
+        
+        st.dataframe(styled, use_container_width=True, height=400)
+    except ImportError:
+        # Fallback: Just apply text color styling without gradient
+        st.warning("⚠️ Install matplotlib for blue gradient styling: `pip install matplotlib`")
+        styled = final_view.style\
+            .applymap(
+                highlight_negatives,
+                subset=pd.IndexSlice[['vs Day Before', 'vs Last Week'], hour_cols]
+            )\
+            .format("{:.0f}")
+        
+        st.dataframe(styled, use_container_width=True, height=400)
+    except Exception as e:
+        # Final fallback: Show unstyled dataframe
+        st.warning(f"⚠️ Styling error: {str(e)}")
+        st.dataframe(final_view, use_container_width=True, height=400)
     
     # Download button
     col1, col2, col3 = st.columns([1, 1, 3])
