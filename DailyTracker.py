@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import requests
 import json
+import pickle
+import os
+import glob
 from io import BytesIO
 from datetime import datetime, timedelta
 import plotly.graph_objects as go
@@ -13,10 +16,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- Minimal CSS (no theme conflicts) ---
+# --- Minimal CSS ---
 st.markdown("""
     <style>
-    /* Just basic improvements, no forced colors */
     .stButton>button {
         border-radius: 8px;
         font-weight: 600;
@@ -28,38 +30,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- Sidebar ---
-st.sidebar.title("📊 Daily Tracker")
-st.sidebar.markdown("---")
-
-AUTH_TOKEN = st.sidebar.text_input("🔑 API Token", type="password")
-target_date_input = st.sidebar.date_input("📅 Select Date", datetime.now())
-
-st.sidebar.markdown("---")
-if st.sidebar.button("🔄 Refresh Data", use_container_width=True):
-    import os
-    import glob
-    
-    # Clear Streamlit cache
-    st.cache_data.clear()
-    
-    # Delete all cache files
-    cache_dir = ".streamlit_cache"
-    if os.path.exists(cache_dir):
-        cache_files = glob.glob(os.path.join(cache_dir, "*"))
-        for f in cache_files:
-            try:
-                os.remove(f)
-            except:
-                pass
-    
-    st.rerun()
-
-if not AUTH_TOKEN:
-    st.warning("👈 Please enter your API Token in the sidebar to proceed.")
-    st.stop()
-
-# --- API Logic ---
+# --- API Functions (Defined early so they are available) ---
 API_URL = "https://dashboard.rabbit-api.app/export"
 
 def fetch_chunk(base, head, payload):
@@ -78,7 +49,6 @@ def fetch_chunk(base, head, payload):
         st.error(f"Connection Error: {e}")
         return pd.DataFrame()
 
-@st.cache_data(ttl=300, show_spinner=False)
 def fetch_day_data(target_date, token):
     date_str = target_date.strftime("%Y-%m-%d")
     start_str = f"{date_str}T00:00:00+02:00"
@@ -120,82 +90,91 @@ def fetch_day_data(target_date, token):
 
     return df
 
-# --- Header ---
-st.title("📊 Daily Tracker Dashboard")
-st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d, %Y')}")
+# --- Sidebar Inputs ---
+st.sidebar.title("📊 Daily Tracker")
+st.sidebar.markdown("---")
 
-col1, col2 = st.columns([4, 1])
-with col2:
-    if st.button("↻ Refresh", use_container_width=True):
-        import os
-        import glob
-        
-        # Clear Streamlit cache
-        st.cache_data.clear()
-        
-        # Delete all cache files
-        cache_dir = ".streamlit_cache"
-        if os.path.exists(cache_dir):
-            cache_files = glob.glob(os.path.join(cache_dir, "*"))
-            for f in cache_files:
-                try:
-                    os.remove(f)
-                except:
-                    pass
-        
-        st.rerun()
-    
-    # Show persistent last refresh time
-    if 'last_refresh_time' in st.session_state and st.session_state.last_refresh_time:
-        st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')}")
-    else:
-        st.caption(f"📅 Last updated: {datetime.now().strftime('%H:%M:%S')}")
+AUTH_TOKEN = st.sidebar.text_input("🔑 API Token", type="password")
+target_date_input = st.sidebar.date_input("📅 Select Date", datetime.now())
 
-st.divider()
-
-# --- Fetch Data ---
-import pickle
-import os
-
-today = pd.to_datetime(target_date_input)
-yesterday = today - timedelta(days=1)
-last_week = today - timedelta(days=7)
-
-# Create cache directory if it doesn't exist
+# --- Cache Management Logic ---
 CACHE_DIR = ".streamlit_cache"
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
-# Cache file path based on date
-date_str = today.strftime('%Y-%m-%d')
+# Define paths based on current date selection
+date_str = pd.to_datetime(target_date_input).strftime('%Y-%m-%d')
 cache_file = os.path.join(CACHE_DIR, f"data_cache_{date_str}.pkl")
 timestamp_file = os.path.join(CACHE_DIR, f"timestamp_{date_str}.txt")
 
-# Check if cached data exists for this date
+# Check if cache exists right now
 cache_exists = os.path.exists(cache_file) and os.path.exists(timestamp_file)
 
-# Only fetch if cache doesn't exist
+# Sidebar Refresh Button
+st.sidebar.markdown("---")
+if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
+    # Clear Streamlit memory cache
+    st.cache_data.clear()
+    
+    # Delete physical cache files to force re-fetch
+    if os.path.exists(CACHE_DIR):
+        files = glob.glob(os.path.join(CACHE_DIR, "*"))
+        for f in files:
+            try:
+                os.remove(f)
+            except:
+                pass
+    st.rerun()
+
+# --- THE FIX: Smart Loading Logic ---
+# 1. If no cache AND no token, stop here.
+if not cache_exists and not AUTH_TOKEN:
+    st.warning("👈 Data not found locally. Please enter your API Token in the sidebar to fetch.")
+    st.stop()
+
+# 2. Variables to hold our data
+df_today = pd.DataFrame()
+df_yesterday = pd.DataFrame()
+df_last_week = pd.DataFrame()
+last_refresh_time = datetime.now()
+
+# 3. Try loading from cache first
+loaded_from_cache = False
 if cache_exists:
-    # Load cached data
-    with open(cache_file, 'rb') as f:
-        cached_data = pickle.load(f)
-    
-    df_today = cached_data['df_today']
-    df_yesterday = cached_data['df_yesterday']
-    df_last_week = cached_data['df_last_week']
-    
-    # Load timestamp
-    with open(timestamp_file, 'r') as f:
-        last_refresh_str = f.read()
-        last_refresh_time = datetime.strptime(last_refresh_str, '%Y-%m-%d %H:%M:%S')
-else:
-    # Fetch fresh data
-    with st.spinner('🔄 Loading data...'):
+    try:
+        with open(cache_file, 'rb') as f:
+            cached_data = pickle.load(f)
+        
+        df_today = cached_data['df_today']
+        df_yesterday = cached_data['df_yesterday']
+        df_last_week = cached_data['df_last_week']
+        
+        with open(timestamp_file, 'r') as f:
+            t_str = f.read()
+            last_refresh_time = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S')
+            
+        loaded_from_cache = True
+    except Exception as e:
+        st.error(f"Cache corrupted: {e}")
+        # If cache fails, we fall through to fetch logic (if token exists)
+
+# 4. Fetch from API if not loaded from cache
+if not loaded_from_cache:
+    # Double check token before fetch attempt
+    if not AUTH_TOKEN:
+        st.error("Cache corrupted or missing and no Token provided.")
+        st.stop()
+
+    with st.spinner('🔄 Fetching fresh data from API...'):
+        today = pd.to_datetime(target_date_input)
+        yesterday = today - timedelta(days=1)
+        last_week = today - timedelta(days=7)
+
         df_today = fetch_day_data(today, AUTH_TOKEN)
         df_yesterday = fetch_day_data(yesterday, AUTH_TOKEN)
         df_last_week = fetch_day_data(last_week, AUTH_TOKEN)
         
-        # Save to cache file
+        # Save to cache
         cached_data = {
             'df_today': df_today,
             'df_yesterday': df_yesterday,
@@ -205,18 +184,29 @@ else:
         with open(cache_file, 'wb') as f:
             pickle.dump(cached_data, f)
         
-        # Save timestamp
         last_refresh_time = datetime.now()
         with open(timestamp_file, 'w') as f:
             f.write(last_refresh_time.strftime('%Y-%m-%d %H:%M:%S'))
 
-# Store in session state for display
-if 'last_refresh_time' not in st.session_state:
-    st.session_state.last_refresh_time = last_refresh_time
-else:
-    st.session_state.last_refresh_time = last_refresh_time
+# Update Session State for persistent timestamp display
+st.session_state.last_refresh_time = last_refresh_time
 
-# --- Data Processing ---
+
+# --- Dashboard Header ---
+st.title("📊 Daily Tracker Dashboard")
+st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d, %Y')}")
+
+col1, col2 = st.columns([4, 1])
+with col2:
+    # Header Refresh Button (Same logic as sidebar)
+    if st.button("↻ Refresh View", use_container_width=True):
+        st.rerun()
+    
+    st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')}")
+
+st.divider()
+
+# --- Data Processing Helper ---
 def create_matrix(df):
     if df.empty or 'start_date_local' not in df.columns:
         return pd.DataFrame()
@@ -239,6 +229,7 @@ def create_matrix(df):
     pivot = pivot.reindex(sorted(pivot.columns), axis=1)
     return pivot
 
+# Generate Matrices
 matrix_today = create_matrix(df_today)
 matrix_yesterday = create_matrix(df_yesterday)
 matrix_last_week = create_matrix(df_last_week)
@@ -318,12 +309,9 @@ if not matrix_today.empty:
     
     # Apply styling
     hour_cols = [col for col in final_view.columns if col != 'Total']
-    
-    # Get all rows that should have blue gradient (areas + Total)
     gradient_rows = list(matrix_today.index) + ['Total']
     
     try:
-        # Try to apply full styling with gradient
         styled = final_view.style\
             .background_gradient(
                 cmap="Blues",
@@ -337,20 +325,9 @@ if not matrix_today.empty:
             .format("{:.0f}")
         
         st.dataframe(styled, use_container_width=True, height=400)
-    except ImportError:
-        # Fallback: Just apply text color styling without gradient
-        st.warning("⚠️ Install matplotlib for blue gradient styling: `pip install matplotlib`")
-        styled = final_view.style\
-            .applymap(
-                highlight_negatives,
-                subset=pd.IndexSlice[['vs Day Before', 'vs Last Week'], hour_cols]
-            )\
-            .format("{:.0f}")
-        
-        st.dataframe(styled, use_container_width=True, height=400)
     except Exception as e:
-        # Final fallback: Show unstyled dataframe
-        st.warning(f"⚠️ Styling error: {str(e)}")
+        # Fallback
+        st.warning(f"Styling unavailable: {e}")
         st.dataframe(final_view, use_container_width=True, height=400)
     
     # Download button
@@ -360,7 +337,7 @@ if not matrix_today.empty:
         st.download_button(
             "📥 Download CSV",
             csv,
-            file_name=f"rides_{today.strftime('%Y-%m-%d')}.csv",
+            file_name=f"rides_{target_date_input.strftime('%Y-%m-%d')}.csv",
             mime="text/csv",
             use_container_width=True
         )
@@ -376,7 +353,7 @@ if not matrix_today.empty:
     
     fig = go.Figure()
     
-    # Today's data
+    # Today
     fig.add_trace(go.Scatter(
         x=list(range(24)),
         y=hourly_data.values,
@@ -432,8 +409,11 @@ if not matrix_today.empty:
         st.info(f"🔥 Busiest: {', '.join([f'{h}:00' for h in top_3])}")
 
 else:
-    st.error("⚠️ No data available for the selected date.")
+    if cache_exists:
+        st.warning("⚠️ Data loaded, but no rides found for the selected date.")
+    else:
+        st.info("👋 Enter your API Token to start.")
 
 # --- Footer ---
 st.divider()
-st.caption("Daily Tracker Dashboard v2.0")
+st.caption("Daily Tracker Dashboard v2.1 (Persistence Fixed)")
