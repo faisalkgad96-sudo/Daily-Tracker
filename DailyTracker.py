@@ -30,7 +30,7 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- API Functions (Defined early so they are available) ---
+# --- API Functions ---
 API_URL = "https://dashboard.rabbit-api.app/export"
 
 def fetch_chunk(base, head, payload):
@@ -90,11 +90,20 @@ def fetch_day_data(target_date, token):
 
     return df
 
-# --- Sidebar Inputs ---
+# --- Sidebar & Authentication ---
 st.sidebar.title("📊 Daily Tracker")
 st.sidebar.markdown("---")
 
-AUTH_TOKEN = st.sidebar.text_input("🔑 API Token", type="password")
+# === AUTHENTICATION LOGIC START ===
+# 1. Check Streamlit Secrets first
+if "AUTH_TOKEN" in st.secrets:
+    AUTH_TOKEN = st.secrets["AUTH_TOKEN"]
+    st.sidebar.success("🔓 Authenticated via Secrets")
+# 2. Fallback to manual input
+else:
+    AUTH_TOKEN = st.sidebar.text_input("🔑 API Token", type="password")
+# === AUTHENTICATION LOGIC END ===
+
 target_date_input = st.sidebar.date_input("📅 Select Date", datetime.now())
 
 # --- Cache Management Logic ---
@@ -113,10 +122,9 @@ cache_exists = os.path.exists(cache_file) and os.path.exists(timestamp_file)
 # Sidebar Refresh Button
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
-    # Clear Streamlit memory cache
     st.cache_data.clear()
     
-    # Delete physical cache files to force re-fetch
+    # Delete physical cache files
     if os.path.exists(CACHE_DIR):
         files = glob.glob(os.path.join(CACHE_DIR, "*"))
         for f in files:
@@ -126,10 +134,10 @@ if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
                 pass
     st.rerun()
 
-# --- THE FIX: Smart Loading Logic ---
+# --- Smart Loading Logic ---
 # 1. If no cache AND no token, stop here.
 if not cache_exists and not AUTH_TOKEN:
-    st.warning("👈 Data not found locally. Please enter your API Token in the sidebar to fetch.")
+    st.warning("👈 Please add your Token to Secrets or enter it in the sidebar.")
     st.stop()
 
 # 2. Variables to hold our data
@@ -156,13 +164,12 @@ if cache_exists:
         loaded_from_cache = True
     except Exception as e:
         st.error(f"Cache corrupted: {e}")
-        # If cache fails, we fall through to fetch logic (if token exists)
+        # Fall through to fetch logic
 
 # 4. Fetch from API if not loaded from cache
 if not loaded_from_cache:
-    # Double check token before fetch attempt
     if not AUTH_TOKEN:
-        st.error("Cache corrupted or missing and no Token provided.")
+        st.error("Cache missing and no Token provided.")
         st.stop()
 
     with st.spinner('🔄 Fetching fresh data from API...'):
@@ -188,7 +195,7 @@ if not loaded_from_cache:
         with open(timestamp_file, 'w') as f:
             f.write(last_refresh_time.strftime('%Y-%m-%d %H:%M:%S'))
 
-# Update Session State for persistent timestamp display
+# Update Session State for persistent timestamp
 st.session_state.last_refresh_time = last_refresh_time
 
 
@@ -198,15 +205,13 @@ st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d,
 
 col1, col2 = st.columns([4, 1])
 with col2:
-    # Header Refresh Button (Same logic as sidebar)
     if st.button("↻ Refresh View", use_container_width=True):
         st.rerun()
-    
     st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')}")
 
 st.divider()
 
-# --- Data Processing Helper ---
+# --- Data Processing ---
 def create_matrix(df):
     if df.empty or 'start_date_local' not in df.columns:
         return pd.DataFrame()
@@ -298,7 +303,7 @@ if not matrix_today.empty:
     # Add totals column
     final_view['Total'] = final_view.sum(axis=1)
     
-    # Simple styling
+    # Styling
     def highlight_negatives(val):
         if isinstance(val, (int, float)):
             if val < 0:
@@ -307,7 +312,6 @@ if not matrix_today.empty:
                 return 'color: green; font-weight: bold'
         return ''
     
-    # Apply styling
     hour_cols = [col for col in final_view.columns if col != 'Total']
     gradient_rows = list(matrix_today.index) + ['Total']
     
@@ -326,7 +330,6 @@ if not matrix_today.empty:
         
         st.dataframe(styled, use_container_width=True, height=400)
     except Exception as e:
-        # Fallback
         st.warning(f"Styling unavailable: {e}")
         st.dataframe(final_view, use_container_width=True, height=400)
     
@@ -353,7 +356,6 @@ if not matrix_today.empty:
     
     fig = go.Figure()
     
-    # Today
     fig.add_trace(go.Scatter(
         x=list(range(24)),
         y=hourly_data.values,
@@ -364,7 +366,6 @@ if not matrix_today.empty:
         fill='tozeroy'
     ))
     
-    # Yesterday
     fig.add_trace(go.Scatter(
         x=list(range(24)),
         y=yesterday_data.values,
@@ -373,7 +374,6 @@ if not matrix_today.empty:
         line=dict(color='#ff7f0e', width=2, dash='dash')
     ))
     
-    # Last week
     fig.add_trace(go.Scatter(
         x=list(range(24)),
         y=last_week_data.values,
@@ -400,7 +400,6 @@ if not matrix_today.empty:
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Quick Stats
     col1, col2 = st.columns(2)
     with col1:
         st.info(f"📊 Average: {total_today/24:.1f} rides/hour")
@@ -412,8 +411,8 @@ else:
     if cache_exists:
         st.warning("⚠️ Data loaded, but no rides found for the selected date.")
     else:
-        st.info("👋 Enter your API Token to start.")
+        st.info("👋 Enter your API Token (or configure Secrets) to start.")
 
 # --- Footer ---
 st.divider()
-st.caption("Daily Tracker Dashboard v2.1 (Persistence Fixed)")
+st.caption("Daily Tracker Dashboard v2.2 (Secrets Auth)")
