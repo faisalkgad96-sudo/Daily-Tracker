@@ -205,7 +205,7 @@ st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d,
 
 col1, col2 = st.columns([4, 1])
 with col2:
-    if st.button("↻ Refresh View", use_container_width=True):
+    if st.button("↻ Refresh Data", use_container_width=True):
         st.rerun()
     st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')}")
 
