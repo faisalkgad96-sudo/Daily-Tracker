@@ -37,7 +37,22 @@ target_date_input = st.sidebar.date_input("📅 Select Date", datetime.now())
 
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Refresh Data", use_container_width=True):
+    import os
+    import glob
+    
+    # Clear Streamlit cache
     st.cache_data.clear()
+    
+    # Delete all cache files
+    cache_dir = ".streamlit_cache"
+    if os.path.exists(cache_dir):
+        cache_files = glob.glob(os.path.join(cache_dir, "*"))
+        for f in cache_files:
+            try:
+                os.remove(f)
+            except:
+                pass
+    
     st.rerun()
 
 if not AUTH_TOKEN:
@@ -112,12 +127,22 @@ st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d,
 col1, col2 = st.columns([4, 1])
 with col2:
     if st.button("↻ Refresh", use_container_width=True):
-        # Clear both Streamlit cache and session state
+        import os
+        import glob
+        
+        # Clear Streamlit cache
         st.cache_data.clear()
-        if 'cached_data' in st.session_state:
-            del st.session_state.cached_data
-        if 'cached_date' in st.session_state:
-            del st.session_state.cached_date
+        
+        # Delete all cache files
+        cache_dir = ".streamlit_cache"
+        if os.path.exists(cache_dir):
+            cache_files = glob.glob(os.path.join(cache_dir, "*"))
+            for f in cache_files:
+                try:
+                    os.remove(f)
+                except:
+                    pass
+        
         st.rerun()
     
     # Show persistent last refresh time
@@ -129,45 +154,67 @@ with col2:
 st.divider()
 
 # --- Fetch Data ---
+import pickle
+import os
+
 today = pd.to_datetime(target_date_input)
 yesterday = today - timedelta(days=1)
 last_week = today - timedelta(days=7)
 
-# Initialize session state for data persistence
-if 'last_refresh_time' not in st.session_state:
-    st.session_state.last_refresh_time = None
-if 'cached_data' not in st.session_state:
-    st.session_state.cached_data = {}
-if 'cached_date' not in st.session_state:
-    st.session_state.cached_date = None
+# Create cache directory if it doesn't exist
+CACHE_DIR = ".streamlit_cache"
+if not os.path.exists(CACHE_DIR):
+    os.makedirs(CACHE_DIR)
 
-# Check if we need to fetch data (date changed or no cached data)
+# Cache file path based on date
 date_str = today.strftime('%Y-%m-%d')
-need_refresh = (
-    st.session_state.cached_date != date_str or 
-    'df_today' not in st.session_state.cached_data
-)
+cache_file = os.path.join(CACHE_DIR, f"data_cache_{date_str}.pkl")
+timestamp_file = os.path.join(CACHE_DIR, f"timestamp_{date_str}.txt")
 
-# Only fetch if needed
-if need_refresh:
+# Check if cached data exists for this date
+cache_exists = os.path.exists(cache_file) and os.path.exists(timestamp_file)
+
+# Only fetch if cache doesn't exist
+if cache_exists:
+    # Load cached data
+    with open(cache_file, 'rb') as f:
+        cached_data = pickle.load(f)
+    
+    df_today = cached_data['df_today']
+    df_yesterday = cached_data['df_yesterday']
+    df_last_week = cached_data['df_last_week']
+    
+    # Load timestamp
+    with open(timestamp_file, 'r') as f:
+        last_refresh_str = f.read()
+        last_refresh_time = datetime.strptime(last_refresh_str, '%Y-%m-%d %H:%M:%S')
+else:
+    # Fetch fresh data
     with st.spinner('🔄 Loading data...'):
         df_today = fetch_day_data(today, AUTH_TOKEN)
         df_yesterday = fetch_day_data(yesterday, AUTH_TOKEN)
         df_last_week = fetch_day_data(last_week, AUTH_TOKEN)
         
-        # Cache the data in session state
-        st.session_state.cached_data = {
+        # Save to cache file
+        cached_data = {
             'df_today': df_today,
             'df_yesterday': df_yesterday,
             'df_last_week': df_last_week
         }
-        st.session_state.cached_date = date_str
-        st.session_state.last_refresh_time = datetime.now()
+        
+        with open(cache_file, 'wb') as f:
+            pickle.dump(cached_data, f)
+        
+        # Save timestamp
+        last_refresh_time = datetime.now()
+        with open(timestamp_file, 'w') as f:
+            f.write(last_refresh_time.strftime('%Y-%m-%d %H:%M:%S'))
+
+# Store in session state for display
+if 'last_refresh_time' not in st.session_state:
+    st.session_state.last_refresh_time = last_refresh_time
 else:
-    # Use cached data (no API calls)
-    df_today = st.session_state.cached_data['df_today']
-    df_yesterday = st.session_state.cached_data['df_yesterday']
-    df_last_week = st.session_state.cached_data['df_last_week']
+    st.session_state.last_refresh_time = last_refresh_time
 
 # --- Data Processing ---
 def create_matrix(df):
