@@ -6,7 +6,7 @@ import pickle
 import os
 import glob
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 import plotly.graph_objects as go
 
 # --- Page Configuration ---
@@ -28,7 +28,7 @@ st.markdown("""
         font-size: 2rem;
     }
     div[data-testid="stContainer"] {
-        background-color: #262730; /* Darker background for cards */
+        background-color: #262730;
         border-radius: 10px;
         padding: 10px;
     }
@@ -100,11 +100,9 @@ st.sidebar.title("📊 Daily Tracker")
 st.sidebar.markdown("---")
 
 # === AUTHENTICATION LOGIC START ===
-# 1. Check Streamlit Secrets first
 if "AUTH_TOKEN" in st.secrets:
     AUTH_TOKEN = st.secrets["AUTH_TOKEN"]
     st.sidebar.success("🔓 Authenticated via Secrets")
-# 2. Fallback to manual input
 else:
     AUTH_TOKEN = st.sidebar.text_input("🔑 API Token", type="password")
 # === AUTHENTICATION LOGIC END ===
@@ -116,20 +114,15 @@ CACHE_DIR = ".streamlit_cache"
 if not os.path.exists(CACHE_DIR):
     os.makedirs(CACHE_DIR)
 
-# Define paths based on current date selection
 date_str = pd.to_datetime(target_date_input).strftime('%Y-%m-%d')
 cache_file = os.path.join(CACHE_DIR, f"data_cache_{date_str}.pkl")
 timestamp_file = os.path.join(CACHE_DIR, f"timestamp_{date_str}.txt")
 
-# Check if cache exists right now
 cache_exists = os.path.exists(cache_file) and os.path.exists(timestamp_file)
 
-# Sidebar Refresh Button
 st.sidebar.markdown("---")
 if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
     st.cache_data.clear()
-    
-    # Delete physical cache files
     if os.path.exists(CACHE_DIR):
         files = glob.glob(os.path.join(CACHE_DIR, "*"))
         for f in files:
@@ -140,18 +133,15 @@ if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
     st.rerun()
 
 # --- Smart Loading Logic ---
-# 1. If no cache AND no token, stop here.
 if not cache_exists and not AUTH_TOKEN:
     st.warning("👈 Please add your Token to Secrets or enter it in the sidebar.")
     st.stop()
 
-# 2. Variables to hold our data
 df_today = pd.DataFrame()
 df_yesterday = pd.DataFrame()
 df_last_week = pd.DataFrame()
 last_refresh_time = datetime.now()
 
-# 3. Try loading from cache first
 loaded_from_cache = False
 if cache_exists:
     try:
@@ -169,9 +159,7 @@ if cache_exists:
         loaded_from_cache = True
     except Exception as e:
         st.error(f"Cache corrupted: {e}")
-        # Fall through to fetch logic
 
-# 4. Fetch from API if not loaded from cache
 if not loaded_from_cache:
     if not AUTH_TOKEN:
         st.error("Cache missing and no Token provided.")
@@ -186,7 +174,6 @@ if not loaded_from_cache:
         df_yesterday = fetch_day_data(yesterday, AUTH_TOKEN)
         df_last_week = fetch_day_data(last_week, AUTH_TOKEN)
         
-        # Save to cache
         cached_data = {
             'df_today': df_today,
             'df_yesterday': df_yesterday,
@@ -200,7 +187,6 @@ if not loaded_from_cache:
         with open(timestamp_file, 'w') as f:
             f.write(last_refresh_time.strftime('%Y-%m-%d %H:%M:%S'))
 
-# Update Session State for persistent timestamp
 st.session_state.last_refresh_time = last_refresh_time
 
 
@@ -216,7 +202,7 @@ with col2:
 
 st.divider()
 
-# --- Data Processing ---
+# --- Data Processing (Matrix Creation) ---
 def create_matrix(df):
     if df.empty or 'start_date_local' not in df.columns:
         return pd.DataFrame()
@@ -239,20 +225,44 @@ def create_matrix(df):
     pivot = pivot.reindex(sorted(pivot.columns), axis=1)
     return pivot
 
-# Generate Matrices
+# --- SAME-TIME COMPARISON LOGIC ---
+# 1. Determine the "Cutoff Time" based on the latest ride in today's data
+if not df_today.empty and 'start_date_local' in df_today.columns:
+    cutoff_time = df_today['start_date_local'].max().time()
+else:
+    cutoff_time = datetime.now().time() # Fallback
+
+# 2. Helper to filter a dataframe to only include rides up to the cutoff time
+def filter_to_cutoff(df, cutoff):
+    if df.empty or 'start_date_local' not in df.columns:
+        return pd.DataFrame() # Return empty if input is empty
+    return df[df['start_date_local'].dt.time <= cutoff]
+
+# 3. Create "Partial" Dataframes for accurate comparison
+df_yesterday_partial = filter_to_cutoff(df_yesterday, cutoff_time)
+df_last_week_partial = filter_to_cutoff(df_last_week, cutoff_time)
+
+# 4. Generate Matrices (Full and Partial)
 matrix_today = create_matrix(df_today)
-matrix_yesterday = create_matrix(df_yesterday)
-matrix_last_week = create_matrix(df_last_week)
+# We use partial matrices for the Delta calculations
+matrix_yesterday_partial = create_matrix(df_yesterday_partial)
+matrix_last_week_partial = create_matrix(df_last_week_partial)
+# We keep full matrices if we ever need to show the full day context (optional)
+matrix_yesterday_full = create_matrix(df_yesterday)
+matrix_last_week_full = create_matrix(df_last_week)
 
 # --- Key Metrics ---
 total_today = int(matrix_today.sum().sum()) if not matrix_today.empty else 0
-total_yesterday = int(matrix_yesterday.sum().sum()) if not matrix_yesterday.empty else 0
-total_last_week = int(matrix_last_week.sum().sum()) if not matrix_last_week.empty else 0
+# IMPORTANT: Use PARTIAL sums for comparison
+total_yesterday_st = int(matrix_yesterday_partial.sum().sum()) if not matrix_yesterday_partial.empty else 0
+total_last_week_st = int(matrix_last_week_partial.sum().sum()) if not matrix_last_week_partial.empty else 0
 
-delta_yesterday = total_today - total_yesterday
-delta_last_week = total_today - total_last_week
-growth_yesterday = (delta_yesterday / total_yesterday * 100) if total_yesterday > 0 else 0
-growth_last_week = (delta_last_week / total_last_week * 100) if total_last_week > 0 else 0
+delta_yesterday = total_today - total_yesterday_st
+delta_last_week = total_today - total_last_week_st
+
+# Calculate growth % safely
+growth_yesterday = (delta_yesterday / total_yesterday_st * 100) if total_yesterday_st > 0 else 0
+growth_last_week = (delta_last_week / total_last_week_st * 100) if total_last_week_st > 0 else 0
 
 # Metrics Display
 col1, col2, col3, col4 = st.columns(4)
@@ -261,7 +271,7 @@ with col1:
     st.metric(
         "📈 Total Rides Today",
         f"{total_today:,}",
-        f"{delta_yesterday:+,} vs yesterday"
+        f"{delta_yesterday:+,} vs yest (same time)" # Label updated for clarity
     )
 
 with col2:
@@ -299,11 +309,16 @@ if not matrix_today.empty:
     total_hourly = matrix_today.sum(axis=0)
     final_view.loc['Total'] = total_hourly
 
-    yesterday_hourly = matrix_yesterday.sum(axis=0) if not matrix_yesterday.empty else pd.Series(0, index=range(24))
-    last_week_hourly = matrix_last_week.sum(axis=0) if not matrix_last_week.empty else pd.Series(0, index=range(24))
+    # For the table, we can choose to show vs Full Day or vs Partial. 
+    # Usually, table hourly comparisons are direct (Hour 1 vs Hour 1).
+    # Since matrix_yesterday_full has 0s for future hours relative to the pivot, 
+    # simple subtraction roughly works, but let's stick to full context for the table 
+    # so you can see if yesterday had a late spike.
+    yesterday_hourly_full = matrix_yesterday_full.sum(axis=0) if not matrix_yesterday_full.empty else pd.Series(0, index=range(24))
+    last_week_hourly_full = matrix_last_week_full.sum(axis=0) if not matrix_last_week_full.empty else pd.Series(0, index=range(24))
 
-    final_view.loc['vs Day Before'] = total_hourly - yesterday_hourly
-    final_view.loc['vs Last Week'] = total_hourly - last_week_hourly
+    final_view.loc['vs Day Before'] = total_hourly - yesterday_hourly_full
+    final_view.loc['vs Last Week'] = total_hourly - last_week_hourly_full
     
     # Add totals column
     final_view['Total'] = final_view.sum(axis=1)
@@ -338,7 +353,6 @@ if not matrix_today.empty:
         st.warning(f"Styling unavailable: {e}")
         st.dataframe(final_view, use_container_width=True, height=400)
     
-    # Download button
     col1, col2, col3 = st.columns([1, 1, 3])
     with col1:
         csv = final_view.to_csv()
@@ -352,55 +366,46 @@ if not matrix_today.empty:
     
     st.divider()
     
-    # ========== AREA PERFORMANCE CARDS (NEW) ==========
-    st.subheader("🏙️ Area Performance Overview")
+    # ========== AREA PERFORMANCE CARDS ==========
+    st.subheader(f"🏙️ Area Performance Overview (vs {cutoff_time.strftime('%H:%M')})")
     
-    # 1. Sort areas by total volume (highest first)
-    # We use the matrix_today row sums to determine order
     area_sums = matrix_today.sum(axis=1).sort_values(ascending=False)
     sorted_areas = area_sums.index.tolist()
 
-    # 2. Define grid (3 columns)
     cols = st.columns(3)
     
-    # 3. Iterate and populate
     for index, area in enumerate(sorted_areas):
-        # Pick the correct column based on index
         with cols[index % 3]:
             with st.container(border=True):
                 # Data Preparation
-                # Today
                 today_series = matrix_today.loc[area]
                 val_today = int(today_series.sum())
                 
-                # Yesterday
-                if area in matrix_yesterday.index:
-                    val_yest = int(matrix_yesterday.loc[area].sum())
+                # Yesterday Partial (Same Time)
+                if area in matrix_yesterday_partial.index:
+                    val_yest_st = int(matrix_yesterday_partial.loc[area].sum())
                 else:
-                    val_yest = 0
+                    val_yest_st = 0
                 
-                # Last Week
-                if area in matrix_last_week.index:
-                    val_lw = int(matrix_last_week.loc[area].sum())
+                # Last Week Partial (Same Time)
+                if area in matrix_last_week_partial.index:
+                    val_lw_st = int(matrix_last_week_partial.loc[area].sum())
                 else:
-                    val_lw = 0
+                    val_lw_st = 0
 
-                # Diffs
-                diff_yest = val_today - val_yest
-                diff_lw = val_today - val_lw
+                # Diffs calculated against Same Time
+                diff_yest = val_today - val_yest_st
+                diff_lw = val_today - val_lw_st
 
-                # Header
                 st.markdown(f"#### {area}")
                 
-                # Primary Metric (vs Yesterday)
                 st.metric(
                     label="Today's Rides",
                     value=f"{val_today}",
                     delta=f"{diff_yest} vs Yesterday"
                 )
                 
-                # Secondary Metric (vs Last Week) via HTML for cleaner look
-                lw_color = "#3dd56d" if diff_lw >= 0 else "#ff4b4b" # Green or Red
+                lw_color = "#3dd56d" if diff_lw >= 0 else "#ff4b4b"
                 lw_sign = "+" if diff_lw >= 0 else ""
                 
                 st.markdown(f"""
@@ -409,9 +414,7 @@ if not matrix_today.empty:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Hourly Sparkline
                 st.caption("Hourly Trend (Today)")
-                # Reset index to ensure chart renders a simple line/area
                 chart_df = today_series.reset_index(drop=True)
                 st.area_chart(chart_df, height=120, color="#1f77b4")
 
@@ -423,4 +426,4 @@ else:
 
 # --- Footer ---
 st.divider()
-st.caption("Daily Tracker Dashboard v2.3 (Area Cards Update)")
+st.caption("Daily Tracker Dashboard v2.4 (Same-Time Comparisons)")
