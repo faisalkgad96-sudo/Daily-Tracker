@@ -6,7 +6,7 @@ import pickle
 import os
 import glob
 from io import BytesIO
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, timezone
 import plotly.graph_objects as go
 
 # --- Page Configuration ---
@@ -35,6 +35,14 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
+# --- TIMEZONE CONFIGURATION (EGYPT UTC+2) ---
+# Egypt is UTC+2 in Winter. If you are in DST (Summer), change hours=2 to hours=3.
+CAIRO_TZ = timezone(timedelta(hours=2))
+
+def get_cairo_now():
+    """Helper to get current time in Cairo"""
+    return datetime.now(CAIRO_TZ)
+
 # --- API Functions ---
 API_URL = "https://dashboard.rabbit-api.app/export"
 
@@ -55,6 +63,7 @@ def fetch_chunk(base, head, payload):
         return pd.DataFrame()
 
 def fetch_day_data(target_date, token):
+    # Format target date for API
     date_str = target_date.strftime("%Y-%m-%d")
     start_str = f"{date_str}T00:00:00+02:00"
     end_str = f"{date_str}T23:59:59+02:00"
@@ -107,7 +116,8 @@ else:
     AUTH_TOKEN = st.sidebar.text_input("🔑 API Token", type="password")
 # === AUTHENTICATION LOGIC END ===
 
-target_date_input = st.sidebar.date_input("📅 Select Date", datetime.now())
+# Set default date to Cairo time "today"
+target_date_input = st.sidebar.date_input("📅 Select Date", get_cairo_now())
 
 # --- Cache Management Logic ---
 CACHE_DIR = ".streamlit_cache"
@@ -140,7 +150,7 @@ if not cache_exists and not AUTH_TOKEN:
 df_today = pd.DataFrame()
 df_yesterday = pd.DataFrame()
 df_last_week = pd.DataFrame()
-last_refresh_time = datetime.now()
+last_refresh_time = get_cairo_now()
 
 loaded_from_cache = False
 if cache_exists:
@@ -154,7 +164,9 @@ if cache_exists:
         
         with open(timestamp_file, 'r') as f:
             t_str = f.read()
-            last_refresh_time = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S')
+            # Parse and attach Cairo TZ info just in case
+            dt_naive = datetime.strptime(t_str, '%Y-%m-%d %H:%M:%S')
+            last_refresh_time = dt_naive.replace(tzinfo=CAIRO_TZ)
             
         loaded_from_cache = True
     except Exception as e:
@@ -183,7 +195,8 @@ if not loaded_from_cache:
         with open(cache_file, 'wb') as f:
             pickle.dump(cached_data, f)
         
-        last_refresh_time = datetime.now()
+        # Capture current Cairo time for the timestamp
+        last_refresh_time = get_cairo_now()
         with open(timestamp_file, 'w') as f:
             f.write(last_refresh_time.strftime('%Y-%m-%d %H:%M:%S'))
 
@@ -198,7 +211,8 @@ col1, col2 = st.columns([4, 1])
 with col2:
     if st.button("↻ Refresh View", use_container_width=True):
         st.rerun()
-    st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')}")
+    # Display the time clearly with Cairo logic
+    st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')} (Cairo)")
 
 st.divider()
 
@@ -226,41 +240,38 @@ def create_matrix(df):
     return pivot
 
 # --- SAME-TIME COMPARISON LOGIC ---
-# 1. Determine the "Cutoff Time" based on the latest ride in today's data
+# 1. Determine the "Cutoff Time"
 if not df_today.empty and 'start_date_local' in df_today.columns:
     cutoff_time = df_today['start_date_local'].max().time()
 else:
-    cutoff_time = datetime.now().time() # Fallback
+    # Use Cairo time for fallback
+    cutoff_time = get_cairo_now().time()
 
-# 2. Helper to filter a dataframe to only include rides up to the cutoff time
+# 2. Helper to filter to cutoff
 def filter_to_cutoff(df, cutoff):
     if df.empty or 'start_date_local' not in df.columns:
-        return pd.DataFrame() # Return empty if input is empty
+        return pd.DataFrame()
     return df[df['start_date_local'].dt.time <= cutoff]
 
-# 3. Create "Partial" Dataframes for accurate comparison
+# 3. Create "Partial" Dataframes
 df_yesterday_partial = filter_to_cutoff(df_yesterday, cutoff_time)
 df_last_week_partial = filter_to_cutoff(df_last_week, cutoff_time)
 
-# 4. Generate Matrices (Full and Partial)
+# 4. Generate Matrices
 matrix_today = create_matrix(df_today)
-# We use partial matrices for the Delta calculations
 matrix_yesterday_partial = create_matrix(df_yesterday_partial)
 matrix_last_week_partial = create_matrix(df_last_week_partial)
-# We keep full matrices if we ever need to show the full day context (optional)
 matrix_yesterday_full = create_matrix(df_yesterday)
 matrix_last_week_full = create_matrix(df_last_week)
 
 # --- Key Metrics ---
 total_today = int(matrix_today.sum().sum()) if not matrix_today.empty else 0
-# IMPORTANT: Use PARTIAL sums for comparison
 total_yesterday_st = int(matrix_yesterday_partial.sum().sum()) if not matrix_yesterday_partial.empty else 0
 total_last_week_st = int(matrix_last_week_partial.sum().sum()) if not matrix_last_week_partial.empty else 0
 
 delta_yesterday = total_today - total_yesterday_st
 delta_last_week = total_today - total_last_week_st
 
-# Calculate growth % safely
 growth_yesterday = (delta_yesterday / total_yesterday_st * 100) if total_yesterday_st > 0 else 0
 growth_last_week = (delta_last_week / total_last_week_st * 100) if total_last_week_st > 0 else 0
 
@@ -271,7 +282,7 @@ with col1:
     st.metric(
         "📈 Total Rides Today",
         f"{total_today:,}",
-        f"{delta_yesterday:+,} vs yest (same time)" # Label updated for clarity
+        f"{delta_yesterday:+,} vs yest (same time)"
     )
 
 with col2:
@@ -309,21 +320,14 @@ if not matrix_today.empty:
     total_hourly = matrix_today.sum(axis=0)
     final_view.loc['Total'] = total_hourly
 
-    # For the table, we can choose to show vs Full Day or vs Partial. 
-    # Usually, table hourly comparisons are direct (Hour 1 vs Hour 1).
-    # Since matrix_yesterday_full has 0s for future hours relative to the pivot, 
-    # simple subtraction roughly works, but let's stick to full context for the table 
-    # so you can see if yesterday had a late spike.
     yesterday_hourly_full = matrix_yesterday_full.sum(axis=0) if not matrix_yesterday_full.empty else pd.Series(0, index=range(24))
     last_week_hourly_full = matrix_last_week_full.sum(axis=0) if not matrix_last_week_full.empty else pd.Series(0, index=range(24))
 
     final_view.loc['vs Day Before'] = total_hourly - yesterday_hourly_full
     final_view.loc['vs Last Week'] = total_hourly - last_week_hourly_full
     
-    # Add totals column
     final_view['Total'] = final_view.sum(axis=1)
     
-    # Styling
     def highlight_negatives(val):
         if isinstance(val, (int, float)):
             if val < 0:
@@ -393,7 +397,6 @@ if not matrix_today.empty:
                 else:
                     val_lw_st = 0
 
-                # Diffs calculated against Same Time
                 diff_yest = val_today - val_yest_st
                 diff_lw = val_today - val_lw_st
 
@@ -426,4 +429,4 @@ else:
 
 # --- Footer ---
 st.divider()
-st.caption("Daily Tracker Dashboard v2.4 (Same-Time Comparisons)")
+st.caption("Daily Tracker Dashboard v2.5 (Cairo Timezone Fix)")
