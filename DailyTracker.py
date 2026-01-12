@@ -27,6 +27,11 @@ st.markdown("""
     div[data-testid="stMetricValue"] {
         font-size: 2rem;
     }
+    div[data-testid="stContainer"] {
+        background-color: #262730; /* Darker background for cards */
+        border-radius: 10px;
+        padding: 10px;
+    }
     </style>
     """, unsafe_allow_html=True)
 
@@ -205,7 +210,7 @@ st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d,
 
 col1, col2 = st.columns([4, 1])
 with col2:
-    if st.button("↻ Refresh Data", use_container_width=True):
+    if st.button("↻ Refresh View", use_container_width=True):
         st.rerun()
     st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')}")
 
@@ -307,9 +312,9 @@ if not matrix_today.empty:
     def highlight_negatives(val):
         if isinstance(val, (int, float)):
             if val < 0:
-                return 'color: red; font-weight: bold'
+                return 'color: #ff4b4b; font-weight: bold'
             elif val > 0:
-                return 'color: green; font-weight: bold'
+                return 'color: #3dd56d; font-weight: bold'
         return ''
     
     hour_cols = [col for col in final_view.columns if col != 'Total']
@@ -347,65 +352,68 @@ if not matrix_today.empty:
     
     st.divider()
     
-    # ========== HOURLY CHART ==========
-    st.subheader("📊 Hourly Ride Distribution")
+    # ========== AREA PERFORMANCE CARDS (NEW) ==========
+    st.subheader("🏙️ Area Performance Overview")
     
-    hourly_data = matrix_today.sum(axis=0)
-    yesterday_data = matrix_yesterday.sum(axis=0) if not matrix_yesterday.empty else pd.Series(0, index=range(24))
-    last_week_data = matrix_last_week.sum(axis=0) if not matrix_last_week.empty else pd.Series(0, index=range(24))
+    # 1. Sort areas by total volume (highest first)
+    # We use the matrix_today row sums to determine order
+    area_sums = matrix_today.sum(axis=1).sort_values(ascending=False)
+    sorted_areas = area_sums.index.tolist()
+
+    # 2. Define grid (3 columns)
+    cols = st.columns(3)
     
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=list(range(24)),
-        y=hourly_data.values,
-        name='Today',
-        mode='lines+markers',
-        line=dict(color='#1f77b4', width=3),
-        marker=dict(size=8),
-        fill='tozeroy'
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=list(range(24)),
-        y=yesterday_data.values,
-        name='Yesterday',
-        mode='lines',
-        line=dict(color='#ff7f0e', width=2, dash='dash')
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=list(range(24)),
-        y=last_week_data.values,
-        name='Last Week',
-        mode='lines',
-        line=dict(color='#2ca02c', width=2, dash='dot')
-    ))
-    
-    fig.update_layout(
-        xaxis_title='Hour of Day',
-        yaxis_title='Number of Rides',
-        hovermode='x unified',
-        height=600,
-        showlegend=True,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        margin=dict(l=0, r=0, t=30, b=0)
-    )
-    
-    st.plotly_chart(fig, use_container_width=True)
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.info(f"📊 Average: {total_today/24:.1f} rides/hour")
-    with col2:
-        top_3 = hourly_data.nlargest(3).index.tolist()
-        st.info(f"🔥 Busiest: {', '.join([f'{h}:00' for h in top_3])}")
+    # 3. Iterate and populate
+    for index, area in enumerate(sorted_areas):
+        # Pick the correct column based on index
+        with cols[index % 3]:
+            with st.container(border=True):
+                # Data Preparation
+                # Today
+                today_series = matrix_today.loc[area]
+                val_today = int(today_series.sum())
+                
+                # Yesterday
+                if area in matrix_yesterday.index:
+                    val_yest = int(matrix_yesterday.loc[area].sum())
+                else:
+                    val_yest = 0
+                
+                # Last Week
+                if area in matrix_last_week.index:
+                    val_lw = int(matrix_last_week.loc[area].sum())
+                else:
+                    val_lw = 0
+
+                # Diffs
+                diff_yest = val_today - val_yest
+                diff_lw = val_today - val_lw
+
+                # Header
+                st.markdown(f"#### {area}")
+                
+                # Primary Metric (vs Yesterday)
+                st.metric(
+                    label="Today's Rides",
+                    value=f"{val_today}",
+                    delta=f"{diff_yest} vs Yesterday"
+                )
+                
+                # Secondary Metric (vs Last Week) via HTML for cleaner look
+                lw_color = "#3dd56d" if diff_lw >= 0 else "#ff4b4b" # Green or Red
+                lw_sign = "+" if diff_lw >= 0 else ""
+                
+                st.markdown(f"""
+                <div style="margin-top: -10px; margin-bottom: 15px; font-size: 0.9em; color: #888;">
+                    Vs Last Week: <span style="color: {lw_color}; font-weight: bold;">{lw_sign}{diff_lw}</span>
+                </div>
+                """, unsafe_allow_html=True)
+                
+                # Hourly Sparkline
+                st.caption("Hourly Trend (Today)")
+                # Reset index to ensure chart renders a simple line/area
+                chart_df = today_series.reset_index(drop=True)
+                st.area_chart(chart_df, height=120, color="#1f77b4")
 
 else:
     if cache_exists:
@@ -415,4 +423,4 @@ else:
 
 # --- Footer ---
 st.divider()
-st.caption("Daily Tracker Dashboard v2.2 (Secrets Auth)")
+st.caption("Daily Tracker Dashboard v2.3 (Area Cards Update)")
