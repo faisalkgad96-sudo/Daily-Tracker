@@ -210,7 +210,17 @@ st.subheader(f"Hourly Ride Analytics • {target_date_input.strftime('%A, %B %d,
 col1, col2 = st.columns([4, 1])
 with col2:
     if st.button("↻ Refresh View", use_container_width=True):
+        # CLEAR CACHE LOGIC (Same as Sidebar)
+        st.cache_data.clear()
+        if os.path.exists(CACHE_DIR):
+            files = glob.glob(os.path.join(CACHE_DIR, "*"))
+            for f in files:
+                try:
+                    os.remove(f)
+                except:
+                    pass
         st.rerun()
+    
     # Display the time clearly with Cairo logic
     st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')} (Cairo)")
 
@@ -429,4 +439,4 @@ else:
 
 # --- Footer ---
 st.divider()
-st.caption("Daily Tracker Dashboard v2.5 (Cairo Timezone Fix)")
+st.caption("Daily Tracker Dashboard v2.6 (Refresh Button Fix)")
