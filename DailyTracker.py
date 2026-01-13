@@ -16,6 +16,51 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# ==========================================
+# 1. AUTHENTICATION & SECRETS SETUP
+# ==========================================
+
+# A. Simple Security Code Check
+def check_auth():
+    """Returns True if the user enters the correct code."""
+    # Check if already authenticated in session
+    if st.session_state.get("authenticated", False):
+        return True
+
+    # Show Login Input
+    st.markdown("### 🔒 Access Required")
+    
+    with st.form("login_form"):
+        user_code = st.text_input("Enter Security Code:", type="password")
+        submit_btn = st.form_submit_button("Login")
+        
+    if submit_btn:
+        # Compare input with the code in secrets.toml
+        try:
+            correct_code = st.secrets["auth"]["security_code"]
+        except Exception:
+            st.error("⚠️ Security code not configured in secrets.toml")
+            return False
+
+        if user_code == correct_code:
+            st.session_state["authenticated"] = True
+            st.rerun() # Reload to clear the login screen
+        else:
+            st.error("❌ Incorrect Code")
+    
+    return False
+
+# Stop the app here if not authenticated
+if not check_auth():
+    st.stop()
+
+# B. Get API URL from Secrets
+try:
+    API_URL = st.secrets["api"]["url"]
+except Exception as e:
+    st.error("⚠️ Error: API URL not found in secrets.toml. Please configure [api] url.")
+    st.stop()
+
 # --- Minimal CSS ---
 st.markdown("""
     <style>
@@ -44,8 +89,6 @@ def get_cairo_now():
     return datetime.now(CAIRO_TZ)
 
 # --- API Functions ---
-API_URL = "https://dashboard.rabbit-api.app/export"
-
 def fetch_chunk(base, head, payload):
     try:
         r = requests.post(base, headers=head, json=payload, timeout=30)
@@ -83,6 +126,7 @@ def fetch_day_data(target_date, token):
         })
     }
 
+    # Using the secure API_URL loaded from secrets
     df = fetch_chunk(API_URL, headers, payload)
 
     if not df.empty:
@@ -108,13 +152,13 @@ def fetch_day_data(target_date, token):
 st.sidebar.title("📊 Daily Tracker")
 st.sidebar.markdown("---")
 
-# === AUTHENTICATION LOGIC START ===
-if "AUTH_TOKEN" in st.secrets:
-    AUTH_TOKEN = st.secrets["AUTH_TOKEN"]
-    st.sidebar.success("🔓 Authenticated via Secrets")
+# === API TOKEN LOGIC ===
+# Try to get token from secrets first, otherwise ask user
+if "auth" in st.secrets and "token" in st.secrets["auth"]:
+    AUTH_TOKEN = st.secrets["auth"]["token"]
+    st.sidebar.success("🔓 Token loaded from Secrets")
 else:
     AUTH_TOKEN = st.sidebar.text_input("🔑 API Token", type="password")
-# === AUTHENTICATION LOGIC END ===
 
 # Set default date to Cairo time "today"
 target_date_input = st.sidebar.date_input("📅 Select Date", get_cairo_now())
@@ -144,7 +188,7 @@ if st.sidebar.button("🔄 Force Refresh Data", use_container_width=True):
 
 # --- Smart Loading Logic ---
 if not cache_exists and not AUTH_TOKEN:
-    st.warning("👈 Please add your Token to Secrets or enter it in the sidebar.")
+    st.warning("👈 Please add your API Token to Secrets or enter it in the sidebar.")
     st.stop()
 
 df_today = pd.DataFrame()
@@ -222,7 +266,8 @@ with col2:
         st.rerun()
     
     # Display the time clearly with Cairo logic
-    st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')} (Cairo)")
+    if 'last_refresh_time' in st.session_state:
+        st.caption(f"📅 Last updated: {st.session_state.last_refresh_time.strftime('%H:%M:%S')} (Cairo)")
 
 st.divider()
 
@@ -435,8 +480,8 @@ else:
     if cache_exists:
         st.warning("⚠️ Data loaded, but no rides found for the selected date.")
     else:
-        st.info("👋 Enter your API Token (or configure Secrets) to start.")
+        st.info("👋 Enter your Security Code & API Token (if not in secrets) to start.")
 
 # --- Footer ---
 st.divider()
-st.caption("Daily Tracker Dashboard v2.6 (Refresh Button Fix)")
+st.caption("Daily Tracker Dashboard v2.7 (Secure Auth)")
